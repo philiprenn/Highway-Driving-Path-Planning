@@ -8,6 +8,10 @@
 #include "Eigen-3.3/Eigen/Core"
 #include "Eigen-3.3/Eigen/QR"
 #include "json.hpp"
+#include "constants.h"
+#include "spline.h"
+#include "vehicle.h"
+#include "cost.h"
 
 using namespace std;
 
@@ -18,6 +22,11 @@ using json = nlohmann::json;
 constexpr double pi() { return M_PI; }
 double deg2rad(double x) { return x * pi() / 180; }
 double rad2deg(double x) { return x * 180 / pi(); }
+
+
+int lane = 1;
+
+double ref_vel = 0.0;
 
 // Checks if the SocketIO event has JSON data.
 // If there is data the JSON object in string format will be returned,
@@ -38,6 +47,7 @@ double distance(double x1, double y1, double x2, double y2)
 {
 	return sqrt((x2-x1)*(x2-x1)+(y2-y1)*(y2-y1));
 }
+
 int ClosestWaypoint(double x, double y, const vector<double> &maps_x, const vector<double> &maps_y)
 {
 
@@ -163,6 +173,12 @@ vector<double> getXY(double s, double d, const vector<double> &maps_s, const vec
 
 }
 
+struct traj_case {
+  vector<double> start;
+  vector<double> end;
+  double T;
+};
+
 int main() {
   uWS::Hub h;
 
@@ -173,6 +189,8 @@ int main() {
   vector<double> map_waypoints_dx;
   vector<double> map_waypoints_dy;
 
+  Vehicle ego;
+
   // Waypoint map to read from
   string map_file_ = "../data/highway_map.csv";
   // The max s value before wrapping around the track back to 0
@@ -181,6 +199,7 @@ int main() {
   ifstream in_map_(map_file_.c_str(), ifstream::in);
 
   string line;
+
   while (getline(in_map_, line)) {
   	istringstream iss(line);
   	double x;
@@ -200,7 +219,12 @@ int main() {
   	map_waypoints_dy.push_back(d_y);
   }
 
-  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+  // starting in lane 1
+  lane = 1;
+
+  ref_vel = 0.0; //mph
+
+  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy, &ego](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -213,45 +237,332 @@ int main() {
 
       if (s != "") {
         auto j = json::parse(s);
-        
+
         string event = j[0].get<string>();
-        
+
         if (event == "telemetry") {
           // j[1] is the data JSON object
-          
+
         	// Main car's localization Data
-          	double car_x = j[1]["x"];
-          	double car_y = j[1]["y"];
-          	double car_s = j[1]["s"];
-          	double car_d = j[1]["d"];
-          	double car_yaw = j[1]["yaw"];
-          	double car_speed = j[1]["speed"];
+          double car_x = j[1]["x"];
+          double car_y = j[1]["y"];
+          double car_s = j[1]["s"];
+          double car_d = j[1]["d"];
+          double car_yaw = j[1]["yaw"];
+          double car_speed = j[1]["speed"];
 
-          	// Previous path data given to the Planner
-          	auto previous_path_x = j[1]["previous_path_x"];
-          	auto previous_path_y = j[1]["previous_path_y"];
-          	// Previous path's end s and d values 
-          	double end_path_s = j[1]["end_path_s"];
-          	double end_path_d = j[1]["end_path_d"];
+          // Previous path data given to the Planner
+          auto previous_path_x = j[1]["previous_path_x"];
+          auto previous_path_y = j[1]["previous_path_y"];
 
-          	// Sensor Fusion Data, a list of all other cars on the same side of the road.
-          	auto sensor_fusion = j[1]["sensor_fusion"];
+          // Previous path's end s and d values
+          double end_path_s = j[1]["end_path_s"];
+          double end_path_d = j[1]["end_path_d"];
 
-          	json msgJson;
+          // Sensor Fusion Data, a list of all other cars on the same side of the road.
+          auto sensor_fusion = j[1]["sensor_fusion"];
 
-          	vector<double> next_x_vals;
-          	vector<double> next_y_vals;
-
-
-          	// TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
-          	msgJson["next_x"] = next_x_vals;
-          	msgJson["next_y"] = next_y_vals;
-
-          	auto msg = "42[\"control\","+ msgJson.dump()+"]";
-
-          	//this_thread::sleep_for(chrono::milliseconds(1000));
-          	ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
           
+
+          // get size of previous path
+          int prev_size = previous_path_x.size();
+
+          // if there was a previous path, assign end of the path to current "s"
+          if (prev_size > 0)
+          {
+            car_s = end_path_s;
+          }
+
+          // initialize ego vehicle
+          string state = "KL";
+          ego.update_info(car_d, car_s, car_speed, 0.0);
+
+          bool too_close = false;
+          bool check_lanes = false;
+
+          // create vector to store sensor data of other vehicles 
+          vector<Vehicle> senseVehicles;
+
+          cout << "-------------------------------" << endl;
+
+          // sensor fusion - detecting other vehicles
+          for (int i=0; i < sensor_fusion.size(); i++)
+          {
+            Vehicle senseVehicle(i);
+            
+            float d = sensor_fusion[i][6];
+            double vx = sensor_fusion[i][3];
+            double vy = sensor_fusion[i][4];
+            double check_speed = sqrt(vx*vx + vy*vy);
+            double check_car_s = sensor_fusion[i][5];
+            double check_car_a = check_speed/0.02;
+
+            // adjust for the sensing delay in car position 
+            check_car_s += ((double)prev_size*0.02*check_speed);
+
+            //senseVehicle.update_info(lane, check_car_s, check_speed, 0.0);
+            senseVehicle.update_info(d, check_car_s, check_speed, 0.0);
+
+            // car is in my lane
+            if (senseVehicle.lane == lane)
+            {
+              // check if front car is "close" to ego vehicle
+              if((check_car_s > car_s) && ((check_car_s-car_s) < FRONT_THRESH))
+              {
+                // DEBUG
+                cout << "FRONT DISTANCE:" << "   " << check_car_s-car_s << endl;;
+
+                too_close = true;
+                check_lanes = true;
+              }
+
+            }
+
+            // store sensed vehicle if it is within a sensing radius of ego vehicle.
+            // this decreases number of loops for checking vehicles in other lanes.
+            if (fabs(check_car_s-car_s) < 150) {
+              senseVehicles.push_back(senseVehicle);
+            }
+
+          }
+
+          // if front vehicle is too close, slow down
+          if (too_close)
+          {
+            // decrease speed
+            ref_vel -= ego.adjust_ACC(senseVehicles);
+            // calculate cost of changing lanes compared to staying in lane
+            lane = ego.choose_next_state(senseVehicles);
+          }
+          // if front vehicle not too close, increase ego speed
+          else if (ref_vel < MAX_SPEED)
+          {
+            ref_vel += MAX_ACCEL;
+          }
+
+          // DEBUG - print next states
+          // find possible next states
+          vector<string> next_states = ego.successor_states();
+          for (int i=0; i < next_states.size(); i++) 
+          {
+            cout << "    " << next_states[i];
+          }
+          cout << endl;
+
+          // create list of widely spaced waypoints (x,y), evenly spaced at 30m
+          vector<double> ptsx;
+          vector<double> ptsy;
+
+          double ref_x = car_x;
+          double ref_y = car_y;
+          double ref_yaw = deg2rad(car_yaw);
+
+          // if no path points find a line tangent to the car
+          if (prev_size < 2)
+          {
+            // use 2 points that make the path tangent to the car
+            double prev_car_x = car_x - cos(car_yaw);
+            double prev_car_y = car_y - sin(car_yaw);
+
+            ptsx.push_back(prev_car_x);
+            ptsx.push_back(car_x);
+
+            ptsy.push_back(prev_car_y);
+            ptsy.push_back(car_y);
+          }
+          else
+          {
+            // store most recent points to create the tangent line
+            ref_x = previous_path_x[prev_size-1];
+            ref_y = previous_path_y[prev_size-1];
+
+            double ref_x_prev = previous_path_x[prev_size-2];
+            double ref_y_prev = previous_path_y[prev_size-2];
+            ref_yaw = atan2(ref_y-ref_y_prev, ref_x-ref_x_prev);
+
+            // use these 2 points that make the path tangent to the previous path's end points
+            ptsx.push_back(ref_x_prev);
+            ptsx.push_back(ref_x);
+
+            ptsy.push_back(ref_y_prev);
+            ptsy.push_back(ref_y);
+
+          }
+
+          // TODO: find the best trajectory
+
+          // initialize trajectory cost structure for all successor states   
+          traj_case tc_s;
+          traj_case tc_d;
+
+          // variable to store tmj cost outputs
+          vector<double> jmt_x_wp;
+          vector<double> jmt_y_wp;
+
+          vector<double> next_wp0;
+          vector<double> next_wp1;
+          vector<double> next_wp2;
+
+          int lane_jmt;
+          
+          if (ego.lane != lane) {
+            double prev_s = car_s;
+            double prev_d = car_d;
+            for (int j=1; j < 4; j++) {
+              // get the next waypoint in (x, y) coordinates
+              vector<double> next_xy = getXY(car_s+30*j, (2+4*lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+              // car_s+30*j
+
+              // create JMT cost structure
+              vector<double> next_sd = getFrenet(next_xy[0], next_xy[1], car_yaw, map_waypoints_x, map_waypoints_y);
+              
+              // get JMT for s-coordinate
+              // tc_s.start = {car_s, car_speed, 0.0};
+              // tc_s.end = {next_sd[0], car_speed, 0.0};
+              // tc_s.T = 3.0; // - (next_sd[0]-car_s) / fabs(ref_vel - car_speed); // prev_size*0.02; //(car_speed/2.24)/30; // 1.5;
+              
+              // get JMT for d-coordinate
+              tc_d.start = {car_d, 0.0, 0.0};
+              tc_d.end = {next_sd[1], 0.0, 0.0};
+              tc_d.T = 3.0; // - prev_size*0.02; //(car_speed/2.24)/30; // 1.5;
+
+              Cost jmt;
+              // double jmt_s = jmt.JMT(tc_s.start, tc_s.end, tc_s.T); //(jmt_s_start, jmt_s_end, 3.0);
+              double jmt_d = jmt.JMT(tc_d.start, tc_d.end, tc_d.T);
+              
+              // car_s+30*j
+              vector<double> xy_wp = getXY(next_sd[0], jmt_d, map_waypoints_s, map_waypoints_x, map_waypoints_y);
+              // next_wp0 = getXY(jmt_s, jmt_d, map_waypoints_s, map_waypoints_x, map_waypoints_y);
+
+              ptsx.push_back(xy_wp[0]);
+              ptsy.push_back(xy_wp[1]);
+
+
+              // DEBUG
+              //for (int i=0; i < jmt_s_cost.size(); i++){
+              cout << next_sd[0] << ", " << jmt_d << "  " << endl;
+              // cout << xy_wp[0] << ", " << xy_wp[1] << endl << endl;
+              // cout << xy_wp[0] << "  " << next_wp1[0] << "   " << next_wp2[0] << endl;
+
+              // prev_s = jmt_s;
+              prev_d = jmt_d;
+            }
+
+          }
+          else{
+            vector<double> next_wp0 = getXY(car_s+30, (2+4*lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+            vector<double> next_wp1 = getXY(car_s+60, (2+4*lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+            vector<double> next_wp2 = getXY(car_s+90, (2+4*lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+          
+
+            cout << endl;
+
+            // }
+            
+            // get next 3 waypoints
+            
+            // store next waypoint
+            ptsx.push_back(next_wp0[0]);
+            ptsx.push_back(next_wp1[0]);
+            ptsx.push_back(next_wp2[0]);
+
+            ptsy.push_back(next_wp0[1]);
+            ptsy.push_back(next_wp1[1]);
+            ptsy.push_back(next_wp2[1]);
+          }
+
+          for (int i=0; i < ptsx.size(); i++)
+          {
+            // shift car reference angle to 0 degrees
+            double shift_x = ptsx[i]-ref_x;
+            double shift_y = ptsy[i]-ref_y;
+
+            ptsx[i] = (shift_x * cos(0-ref_yaw) - shift_y * sin(0-ref_yaw));
+            ptsy[i] = (shift_x * sin(0-ref_yaw) + shift_y * cos(0-ref_yaw));
+          }
+
+          //create a spline
+          tk::spline sp;
+
+          // set (x,y) points to the spline
+          sp.set_points(ptsx, ptsy);
+
+          // define the actual (x,y)
+          vector<double> next_x_vals;
+          vector<double> next_y_vals;
+
+          // start with all previous points from last time
+          for(int i=0; i < previous_path_x.size(); i++)
+          {
+            next_x_vals.push_back(previous_path_x[i]);
+            next_y_vals.push_back(previous_path_y[i]);
+
+          }
+          // DEBUG
+          // cout << "set next vals" << endl;
+
+          // calculate how to break up spline points so that we travel at our desired velocity
+          double target_x = 30.0;  // horison
+          double target_y = sp(target_x);
+          double target_dist = sqrt((target_x)*(target_x) + (target_y)*(target_y));
+
+          double x_add_on = 0;
+
+          for (int i=0; i <= 50-previous_path_x.size(); i++)
+          {
+            // find (x, y) points along spline using spacing according to velocity
+            double N = (target_dist/(0.02 * ref_vel/2.24));
+            double x_point = x_add_on + (target_x)/N;
+            double y_point = sp(x_point);
+
+            x_add_on = x_point;
+
+            double x_ref = x_point;
+            double y_ref = y_point;
+
+            // rotate back to normal after rotating it earlier
+            x_point = (x_ref * cos(ref_yaw) - y_ref * sin(ref_yaw));
+            y_point = (x_ref * sin(ref_yaw) + y_ref * cos(ref_yaw));
+
+            x_point += ref_x;
+            y_point += ref_y;
+
+            next_x_vals.push_back(x_point);
+            next_y_vals.push_back(y_point);
+          }
+
+          
+          
+          ego.update_info(car_d, car_s, car_speed, 0.0);
+
+          cout << "Ego: " << ego.lane << " " << ego.v << endl << endl;
+
+          //cout << "Other: " << senseVehicles[0].lane << " " << senseVehicles[0].v << endl;
+          cout << "-------------------------------" << endl;
+
+          // TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
+          // double dist_inc = 0.4;
+          // for(int i = 0; i < 50; i++)
+          // {
+          //   double next_s = car_s + (i + 1)*dist_inc;
+          //   double next_d = 6.0;
+          //
+          //   vector<double> xy = getXY(next_s, next_d, map_waypoints_s, map_waypoints_x, map_waypoints_y);
+          //
+          //   next_x_vals.push_back(xy[0]);
+          //   next_y_vals.push_back(xy[1]);
+          // }
+
+          json msgJson;
+
+          msgJson["next_x"] = next_x_vals;
+          msgJson["next_y"] = next_y_vals;
+
+          auto msg = "42[\"control\","+ msgJson.dump()+"]";
+
+          //this_thread::sleep_for(chrono::milliseconds(1000));
+          ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
+
         }
       } else {
         // Manual driving
