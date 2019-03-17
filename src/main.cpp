@@ -23,11 +23,6 @@ constexpr double pi() { return M_PI; }
 double deg2rad(double x) { return x * pi() / 180; }
 double rad2deg(double x) { return x * 180 / pi(); }
 
-
-int lane = 1;
-
-double ref_vel = 0.0;
-
 // Checks if the SocketIO event has JSON data.
 // If there is data the JSON object in string format will be returned,
 // else the empty string "" will be returned.
@@ -173,6 +168,7 @@ vector<double> getXY(double s, double d, const vector<double> &maps_s, const vec
 
 }
 
+// trajectory case struct - JMT 
 struct traj_case {
   vector<double> start;
   vector<double> end;
@@ -220,11 +216,11 @@ int main() {
   }
 
   // starting in lane 1
-  lane = 1;
+  int lane = 1;
 
-  ref_vel = 0.0; //mph
+  double ref_vel = 0.0; //mph
 
-  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy, &ego](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy, &ego, &lane, &ref_vel](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -262,20 +258,16 @@ int main() {
           // Sensor Fusion Data, a list of all other cars on the same side of the road.
           auto sensor_fusion = j[1]["sensor_fusion"];
 
-          
-
           // get size of previous path
           int prev_size = previous_path_x.size();
 
           // if there was a previous path, assign end of the path to current "s"
-          if (prev_size > 0)
-          {
+          if (prev_size > 0) {
             car_s = end_path_s;
           }
 
           // initialize ego vehicle
-          string state = "KL";
-          ego.update_info(car_d, car_s, car_speed, 0.0);
+          ego.update_info(car_d, car_s, car_speed);
 
           bool too_close = false;
           bool check_lanes = false;
@@ -288,25 +280,24 @@ int main() {
           // sensor fusion - detecting other vehicles
           for (int i=0; i < sensor_fusion.size(); i++)
           {
-            Vehicle senseVehicle(i);
+            Vehicle senseVehicle;
             
             float d = sensor_fusion[i][6];
             double vx = sensor_fusion[i][3];
             double vy = sensor_fusion[i][4];
             double check_speed = sqrt(vx*vx + vy*vy);
             double check_car_s = sensor_fusion[i][5];
-            double check_car_a = check_speed/0.02;
-
+            
             // adjust for the sensing delay in car position 
             check_car_s += ((double)prev_size*0.02*check_speed);
 
-            //senseVehicle.update_info(lane, check_car_s, check_speed, 0.0);
-            senseVehicle.update_info(d, check_car_s, check_speed, 0.0);
+            // store sensed vehicle data
+            senseVehicle.update_info(d, check_car_s, check_speed);
 
-            // car is in my lane
+            // check if car is in my lane
             if (senseVehicle.lane == lane)
             {
-              // check if front car is "close" to ego vehicle
+              // check if front car is "too close" to ego vehicle
               if((check_car_s > car_s) && ((check_car_s-car_s) < FRONT_THRESH))
               {
                 // DEBUG
@@ -326,6 +317,15 @@ int main() {
 
           }
 
+          // DEBUG - print next states
+          // display possible next states
+          vector<string> next_states = ego.successor_states();
+          for (int i=0; i < next_states.size(); i++) {
+            cout << "    " << next_states[i];
+          }
+          cout << endl;
+          // end DEBUG
+
           // if front vehicle is too close, slow down
           if (too_close)
           {
@@ -339,15 +339,6 @@ int main() {
           {
             ref_vel += MAX_ACCEL;
           }
-
-          // DEBUG - print next states
-          // find possible next states
-          vector<string> next_states = ego.successor_states();
-          for (int i=0; i < next_states.size(); i++) 
-          {
-            cout << "    " << next_states[i];
-          }
-          cout << endl;
 
           // create list of widely spaced waypoints (x,y), evenly spaced at 30m
           vector<double> ptsx;
@@ -389,79 +380,51 @@ int main() {
 
           }
 
-          // TODO: find the best trajectory
-
-          // initialize trajectory cost structure for all successor states   
-          traj_case tc_s;
-          traj_case tc_d;
-
-          // variable to store tmj cost outputs
-          vector<double> jmt_x_wp;
-          vector<double> jmt_y_wp;
-
+          // get next 3 waypoints
           vector<double> next_wp0;
           vector<double> next_wp1;
           vector<double> next_wp2;
-
-          int lane_jmt;
           
+          // check if vehicle is changing lanes
           if (ego.lane != lane) {
-            double prev_s = car_s;
-            double prev_d = car_d;
-            for (int j=1; j < 4; j++) {
-              // get the next waypoint in (x, y) coordinates
+            // compute jmt for d-values of next waypoints
+            for (int j=2; j < 4; j++) {
+              // initialize trajectory cost for d-value - using structure `traj_case`
+              traj_case tc_d;
+
+              // convert waypoint to cartesian coordinates
               vector<double> next_xy = getXY(car_s+30*j, (2+4*lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
-              // car_s+30*j
 
               // create JMT cost structure
               vector<double> next_sd = getFrenet(next_xy[0], next_xy[1], car_yaw, map_waypoints_x, map_waypoints_y);
               
-              // get JMT for s-coordinate
-              // tc_s.start = {car_s, car_speed, 0.0};
-              // tc_s.end = {next_sd[0], car_speed, 0.0};
-              // tc_s.T = 3.0; // - (next_sd[0]-car_s) / fabs(ref_vel - car_speed); // prev_size*0.02; //(car_speed/2.24)/30; // 1.5;
-              
               // get JMT for d-coordinate
               tc_d.start = {car_d, 0.0, 0.0};
               tc_d.end = {next_sd[1], 0.0, 0.0};
-              tc_d.T = 3.0; // - prev_size*0.02; //(car_speed/2.24)/30; // 1.5;
+              tc_d.T = 1.0*(j-1) - prev_size*0.02;
 
               Cost jmt;
-              // double jmt_s = jmt.JMT(tc_s.start, tc_s.end, tc_s.T); //(jmt_s_start, jmt_s_end, 3.0);
               double jmt_d = jmt.JMT(tc_d.start, tc_d.end, tc_d.T);
               
-              // car_s+30*j
+              // convert waypoint back to (x,y)
               vector<double> xy_wp = getXY(next_sd[0], jmt_d, map_waypoints_s, map_waypoints_x, map_waypoints_y);
-              // next_wp0 = getXY(jmt_s, jmt_d, map_waypoints_s, map_waypoints_x, map_waypoints_y);
 
+              // store next waypoint values 
               ptsx.push_back(xy_wp[0]);
               ptsy.push_back(xy_wp[1]);
 
-
               // DEBUG
-              //for (int i=0; i < jmt_s_cost.size(); i++){
               cout << next_sd[0] << ", " << jmt_d << "  " << endl;
-              // cout << xy_wp[0] << ", " << xy_wp[1] << endl << endl;
-              // cout << xy_wp[0] << "  " << next_wp1[0] << "   " << next_wp2[0] << endl;
-
-              // prev_s = jmt_s;
-              prev_d = jmt_d;
             }
 
           }
           else{
+            // get next 3 waypoints
             vector<double> next_wp0 = getXY(car_s+30, (2+4*lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
             vector<double> next_wp1 = getXY(car_s+60, (2+4*lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
             vector<double> next_wp2 = getXY(car_s+90, (2+4*lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
-          
-
-            cout << endl;
-
-            // }
             
-            // get next 3 waypoints
-            
-            // store next waypoint
+            // store next waypoints
             ptsx.push_back(next_wp0[0]);
             ptsx.push_back(next_wp1[0]);
             ptsx.push_back(next_wp2[0]);
@@ -498,6 +461,7 @@ int main() {
             next_y_vals.push_back(previous_path_y[i]);
 
           }
+
           // DEBUG
           // cout << "set next vals" << endl;
 
@@ -531,27 +495,11 @@ int main() {
             next_y_vals.push_back(y_point);
           }
 
-          
-          
-          ego.update_info(car_d, car_s, car_speed, 0.0);
-
+          // DEBUG
           cout << "Ego: " << ego.lane << " " << ego.v << endl << endl;
 
           //cout << "Other: " << senseVehicles[0].lane << " " << senseVehicles[0].v << endl;
           cout << "-------------------------------" << endl;
-
-          // TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
-          // double dist_inc = 0.4;
-          // for(int i = 0; i < 50; i++)
-          // {
-          //   double next_s = car_s + (i + 1)*dist_inc;
-          //   double next_d = 6.0;
-          //
-          //   vector<double> xy = getXY(next_s, next_d, map_waypoints_s, map_waypoints_x, map_waypoints_y);
-          //
-          //   next_x_vals.push_back(xy[0]);
-          //   next_y_vals.push_back(xy[1]);
-          // }
 
           json msgJson;
 

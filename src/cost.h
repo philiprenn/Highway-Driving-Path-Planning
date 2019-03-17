@@ -22,16 +22,16 @@ public:
 
 	double JMT(vector<double> start, vector <double> end, double T);
 
-	double high_cost = 100.0;
+	double target_dist = 70.0;
+	double target_speed = 50.0;
 
 	double front_cost = 1.0;
 
-	double rear_cost = 0.2;
+	double rear_cost = 0.5;
 
-	double lane_change_cost = 1.3;
+	double lane_change_cost = 1.2;
 
 	double speed_cost = 1.5;
 
 };
-
 #endif  // COST_H

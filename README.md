@@ -10,7 +10,7 @@ sudo chmod u+x {simulator_file_name}
 ```
 
 ### Goals
-In this project your goal is to safely navigate around a virtual highway with other traffic that is driving +-10 MPH of the 50 MPH speed limit. You will be provided the car's localization and sensor fusion data, there is also a sparse map list of waypoints around the highway. The car should try to go as close as possible to the 50 MPH speed limit, which means passing slower traffic when possible, note that other cars will try to change lanes too. The car should avoid hitting other cars at all cost as well as driving inside of the marked road lanes at all times, unless going from one lane to another. The car should be able to make one complete loop around the 6946m highway. Since the car is trying to go 50 MPH, it should take a little over 5 minutes to complete 1 loop. Also the car should not experience total acceleration over 10 m/s^2 and jerk that is greater than 10 m/s^3.
+In this project the goal is to safely navigate around a virtual highway with other traffic that is driving +-10 MPH of the 50 MPH speed limit. I was provided the car's localization and sensor fusion data, there is also a sparse map list of waypoints around the highway. The car should try to go as close as possible to the 50 MPH speed limit, which means passing slower traffic when possible, note that other cars will try to change lanes too. The car should avoid hitting other cars at all cost as well as driving inside of the marked road lanes at all times, unless going from one lane to another. The car should be able to make one complete loop around the 6946m highway. Since the car is trying to go 50 MPH, it should take a little over 5 minutes to complete 1 loop. Also the car should not experience total acceleration over 10 m/s^2 and jerk that is greater than 10 m/s^3.
 
 #### The map of the highway is in data/highway_map.txt
 Each waypoint in the list contains  [x,y,s,dx,dy] values. x and y are the waypoint's map coordinate position, the s value is the distance along the road to get to that waypoint in meters, the dx and dy values define the unit normal vector pointing outward of the highway loop.
@@ -41,9 +41,6 @@ Here is the data provided from the Simulator to the C++ Program
 ["speed"] The car's speed in MPH
 
 #### Previous path data given to the Planner
-
-//Note: Return the previous list but with processed points removed, can be a nice tool to show how far along
-the path has processed since last time. 
 
 ["previous_path_x"] The previous list of x points previously given to the simulator
 
@@ -92,12 +89,53 @@ A really helpful resource for doing this project and creating smooth trajectorie
     git checkout e94b6e1
     ```
 
-## Editor Settings
+## Files
+`main.cpp` - connects code to simulator, path generator, etc.
+`vehicle.cpp` - Vehicle class, stores info about vehicles, adaptive cruise control, check lanes
+`cost.cpp` - computes cost of potential next states and jerk minimized trajectories (JMT)
+`constants.h` - contains constants defined by requirements
+`spline.h` - creates spline for path  
 
-We've purposefully kept editor configuration files out of this repo in order to
-keep it as simple and environment agnostic as possible. However, we recommend
-using the following settings:
+---
 
-* indent using spaces
-* set tab width to 2 spaces (keeps the matrices in source code aligned)
+## Writeup (Rubric Points)
+
+1. The car is able to drive at least 4.32 miles without incident.
+
+The car is able to drive at least 4.32 miles without an incident. However, there are edge cases where the vehicle is subjected to other vehicles with unsafe maneuvers which could potentially result in a crash. For example, I have seen aggressive lane changes from other vehicles merging into the ego vehicles lane imediately in front of ego vehicle. This can be mitigated if the lanes next to the ego vehicle are available for a lane change but that might not be the case everytime. If the lanes are not available for an ego vehicle lane change, I implemented an emergency braking scenario to apply the maximum deceleration allowed if this event does occur.
+
+2. The car drives according to the speed limit.
+
+The maximum speed is set to 49 mph to ensure that the vehicle will not exceed 50 mph. The 1 mph "cushion" is there for the vehicle to be able to accelerate at the maximum allowed limit while going 49 mph.
+
+3. Max acceleration and jerk are not exceeded.
+
+The maximum acceleration and jerk is not exceeded as I have set the acceleration slightly below the actual maximum value and a Jerk Minimizing Trajectory function was implemented to not exceed the jerk limits while changing lanes.
+
+4. Car does not have collisions.
+
+The car does not collide with other vehicles in resonable situations. Edge cases such as the one mentioned above in (1) may force a collision with the ego vehicle at the fault of the other car.
+
+5. The car doesn't spend more than a 3 second length out side the lane lanes during changing lanes, and every other time the car stays inside one of the 3 lanes on the right hand side of the road.
+
+I implemented the JMT function to handle lane changes which requires the vehicle to get into the next lane in under 3 seconds while also satisfying the jerk requirements. If the vehicle realizes that the cost of staying in the new lane is higher than changing to another lane immediately after completing a lane change, then the vehicle may look as if it has been outside of a lane for more than 3 seconds. However, it is simply moving to the lane with the lowest 'cost'.
+
+6. The car is able to smoothly change lanes when it makes sense to do so, such as when behind a slower moving car and an adjacent lane is clear of other traffic.
+
+To ensure an overall smooth ride, I wanted to limit the amount of lane changes performed. So, instead of constantly changing lanes to the one with the lowest cost at any given time, the vehicle will only look to change lanes once it has encountered a vehicle within 35m in front of the ego vehicle. Then, it checks the available lanes to see if there are any vehicles coming from behind, in front, and calculates the speed of each vehicle to help compute the cost of changing into that lane. Once the vehicle decides to change lanes, it will compute the trajectory of this maneuver using the JMT function.
+
+## Reflection: Generating the path
+
+In order to generate a path using the data from the vehicle, simulator, and sensors, I found the spline function to be quite useful. To utililize the spline function I first had to get at least three points to create a spline. These points were generated as a list of waypoints from the map data that were evenly spaced 30m apart in addition to the vehicles current position. This gave me enough points to create a spline.
+
+In order to make this spline align with the vehicle, I calculated a line tangent to the vehicles previous path using the paths 2 previous points. If the vehicle had no previous points I simply calculated points that would create a line tangent to the car.
+
+Using the points from the previous path as well as the waypoints, these points were set in the spline function to generate the path. However, I needed to break up this spline into data that would be understood by the simulator. To do this, I used all the points from the previous path and appended the points from the spline. I broke up the spline into a specific number of points generated by using the vehicles speed and horizon value (30m). I then divided the spline into many points which were evenly spaced with respect to the vehicles velocity. These x and y-values were sent to the simulator to move the vehicle along these points on the road.
+
+## Future Improvements
+
+* Use the JMT function for velocity/acceleration control during lane changes
+* Incorporate robust prediction method to 'track' other vehicles to predict their potential paths, acceleration, etc.
+* Add a 'buffer' state which prepares for lane changes and a waiting period to finish a lance change before starting another
+* More robust/elegant adaptive cruise control method 
 

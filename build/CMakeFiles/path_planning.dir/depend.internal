@@ -645,6 +645,7 @@ CMakeFiles/path_planning.dir/src/vehicle.cpp.o
  /home/philip/Documents/Udacity/Term2/Path-Planning-Project/src/Eigen-3.3/Eigen/src/plugins/CommonCwiseUnaryOps.h
  /home/philip/Documents/Udacity/Term2/Path-Planning-Project/src/Eigen-3.3/Eigen/src/plugins/MatrixCwiseBinaryOps.h
  /home/philip/Documents/Udacity/Term2/Path-Planning-Project/src/Eigen-3.3/Eigen/src/plugins/MatrixCwiseUnaryOps.h
+ /home/philip/Documents/Udacity/Term2/Path-Planning-Project/src/constants.h
  /home/philip/Documents/Udacity/Term2/Path-Planning-Project/src/cost.h
  /home/philip/Documents/Udacity/Term2/Path-Planning-Project/src/vehicle.cpp
  /home/philip/Documents/Udacity/Term2/Path-Planning-Project/src/vehicle.h

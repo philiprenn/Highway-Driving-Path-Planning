@@ -6,19 +6,16 @@
 using std::string;
 using std::vector;
 
-//using namespace std;
-
 class Vehicle 
 {
 public:
 	int id;
 
 	Vehicle();
-	Vehicle(int id);
 
 	virtual ~Vehicle();
 
-	void update_info(float d, double s, double v, double a);
+	void update_info(float d, double s, double v);
 
 	int get_lane(float d);
 
@@ -30,13 +27,9 @@ public:
 
 	std::tuple< vector<double>, vector<double> > check_lanes(int check_lane, vector<Vehicle> other_vehicles);
 
-	int L = 1;
+	int lane;
 
-	int preferred_buffer = 6; // impacts "keep lane" behavior.
-
-	int lane, s, goal_lane, goal_s, lanes_available;
-
-	float d, v, target_speed, a;
+	float d, s, v, target_speed;
 
 	string state;
 };
